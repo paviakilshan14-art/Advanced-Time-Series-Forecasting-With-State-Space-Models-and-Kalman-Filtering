@@ -235,18 +235,5 @@ plt.legend()
 plt.title("Estimated State Variables")
 plt.show()
 
-Documentation:
 
-Repository: paviakilshan14-art/advanced-time-series-forecasting-with-state-space-models-and-kalman-filtering
-Commit: 9f6102428e0087e5f001092354b855aae9bba52f
-Files analyzed: 1
-Estimated tokens: 1.6k
 
-Directory structure:
-└── paviakilshan14-art-advanced-time-series-forecasting-with-state-space-models-and-kalman-filtering/
-    └── Advanced-Time-Series-Forecasting-With-State-Space-Models-and-Kalman-Filtering
-    └── README
-
-Summary:
-
-This project develops an advanced time series forecasting model using State Space Models and the Kalman Filter to analyze and predict financial time series data. Using daily S&P 500 closing prices, the model explicitly represents latent components such as trend through a Local Linear Trend state-space formulation. Model parameters are estimated via Maximum Likelihood Estimation, and forecasts are generated for out-of-sample evaluation. Performance is assessed using RMSE and MAE and compared against a SARIMA benchmark, demonstrating the effectiveness of Kalman Filter-based forecasting for financial time series analysis.
