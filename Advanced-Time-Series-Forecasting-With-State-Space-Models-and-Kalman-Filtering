@@ -1,0 +1,237 @@
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+from scipy.optimize import minimize
+
+import yfinance as yf
+
+plt.style.use("seaborn-darkgrid")
+
+#  Load Dataset (S&P 500 Daily Closing Prices)
+
+ticker = "^GSPC"
+data = yf.download(ticker, start="2015-01-01", end="2024-01-01")
+ts = data["Close"].dropna()
+
+ts.name = "S&P 500 Close"
+
+
+# Exploratory Data Analysis (EDA)
+
+plt.figure(figsize=(12,5))
+plt.plot(ts)
+plt.title("S&P 500 Closing Prices")
+plt.xlabel("Date")
+plt.ylabel("Price")
+plt.show()
+
+# ADF Test for Stationarity
+adf_result = adfuller(ts)
+print("ADF Statistic:", adf_result[0])
+print("p-value:", adf_result[1])
+
+# ACF & PACF
+fig, ax = plt.subplots(1,2, figsize=(14,4))
+plot_acf(ts, ax=ax[0], lags=40)
+plot_pacf(ts, ax=ax[1], lags=40)
+plt.show()
+
+# Train-Test Split
+
+train_size = int(len(ts) * 0.8)
+train, test = ts.iloc[:train_size], ts.iloc[train_size:]
+
+
+#  State Space Model Definition
+
+# Local Linear Trend Model
+#
+# State vector:
+# x_t = [level_t, trend_t]'
+#
+# Observation equation:
+# y_t = [1 0] x_t + v_t
+#
+# Transition equation:
+# x_t = [[1 1],
+#        [0 1]] x_{t-1} + w_t
+
+
+F = np.array([[1, 1],
+              [0, 1]])   # State transition matrix
+
+H = np.array([[1, 0]])   # Observation matrix
+
+
+#  Kalman Filter Implementation
+
+def kalman_filter(y, F, H, Q, R, x0, P0):
+    n = len(y)
+    dim_x = x0.shape[0]
+
+    x_pred = np.zeros((n, dim_x))
+    P_pred = np.zeros((n, dim_x, dim_x))
+    x_filt = np.zeros((n, dim_x))
+    P_filt = np.zeros((n, dim_x, dim_x))
+
+    log_likelihood = 0
+
+    x_prev = x0
+    P_prev = P0
+
+    for t in range(n):
+        # Prediction
+        x_prior = F @ x_prev
+        P_prior = F @ P_prev @ F.T + Q
+
+        # Update
+        y_pred = H @ x_prior
+        innovation = y.iloc[t] - y_pred
+        S = H @ P_prior @ H.T + R
+        K = P_prior @ H.T @ np.linalg.inv(S)
+
+        x_post = x_prior + K.flatten() * innovation
+        P_post = (np.eye(dim_x) - K @ H) @ P_prior
+
+        # Save
+        x_pred[t] = x_prior
+        P_pred[t] = P_prior
+        x_filt[t] = x_post
+        P_filt[t] = P_post
+
+        # Log-likelihood
+        log_likelihood += -0.5 * (
+            np.log(2 * np.pi) +
+            np.log(np.linalg.det(S)) +
+            innovation.T @ np.linalg.inv(S) @ innovation
+        )
+
+        x_prev = x_post
+        P_prev = P_post
+
+    return x_filt, P_filt, log_likelihood
+
+
+
+#  Log-Likelihood Optimization (MLE)
+
+
+def negative_log_likelihood(params):
+    q_level, q_trend, r_obs = np.exp(params)
+
+    Q = np.array([[q_level, 0],
+                  [0, q_trend]])
+    R = np.array([[r_obs]])
+
+    x0 = np.array([train.iloc[0], 0])
+    P0 = np.eye(2)
+
+    _, _, ll = kalman_filter(train, F, H, Q, R, x0, P0)
+    return -ll
+
+initial_params = np.log([1.0, 1.0, 1.0])
+
+result = minimize(negative_log_likelihood,
+                  initial_params,
+                  method="L-BFGS-B")
+
+q_level, q_trend, r_obs = np.exp(result.x)
+
+Q_opt = np.array([[q_level, 0],
+                  [0, q_trend]])
+R_opt = np.array([[r_obs]])
+
+print("Optimized Q:", Q_opt)
+print("Optimized R:", R_opt)
+
+
+#  Run Kalman Filter with Optimized Parameters
+
+x0 = np.array([train.iloc[0], 0])
+P0 = np.eye(2)
+
+state_estimates, state_covs, _ = kalman_filter(
+    train, F, H, Q_opt, R_opt, x0, P0
+)
+
+level_est = state_estimates[:,0]
+trend_est = state_estimates[:,1]
+
+#  Forecasting (Kalman Filter)
+
+def kalman_forecast(x_last, P_last, steps):
+    forecasts = []
+    x = x_last
+    P = P_last
+
+    for _ in range(steps):
+        x = F @ x
+        P = F @ P @ F.T + Q_opt
+        y_hat = H @ x
+        forecasts.append(y_hat[0])
+
+    return np.array(forecasts)
+
+kf_forecast = kalman_forecast(
+    state_estimates[-1],
+    state_covs[-1],
+    len(test)
+)
+
+
+# SARIMA Benchmark Model
+
+sarima_model = SARIMAX(train,
+                       order=(1,1,1),
+                       seasonal_order=(1,1,1,12),
+                       enforce_stationarity=False,
+                       enforce_invertibility=False)
+
+sarima_fit = sarima_model.fit(disp=False)
+sarima_forecast = sarima_fit.forecast(len(test))
+
+#  Performance Evaluation
+
+kf_rmse = np.sqrt(mean_squared_error(test, kf_forecast))
+kf_mae = mean_absolute_error(test, kf_forecast)
+
+sarima_rmse = np.sqrt(mean_squared_error(test, sarima_forecast))
+sarima_mae = mean_absolute_error(test, sarima_forecast)
+
+print("Kalman Filter RMSE:", kf_rmse)
+print("Kalman Filter MAE :", kf_mae)
+
+print("SARIMA RMSE:", sarima_rmse)
+print("SARIMA MAE :", sarima_mae)
+
+# Visualization of Forecasts
+
+
+plt.figure(figsize=(12,5))
+plt.plot(train.index, train, label="Train")
+plt.plot(test.index, test, label="Test", color="black")
+plt.plot(test.index, kf_forecast, label="Kalman Forecast")
+plt.plot(test.index, sarima_forecast, label="SARIMA Forecast")
+plt.legend()
+plt.title("Forecast Comparison")
+plt.show()
+
+
+#  Plot Estimated State Variables
+
+plt.figure(figsize=(12,4))
+plt.plot(train.index, level_est, label="Estimated Level")
+plt.plot(train.index, trend_est, label="Estimated Trend")
+plt.legend()
+plt.title("Estimated State Variables")
+plt.show()
+
